@@ -1,5 +1,8 @@
 from __future__ import unicode_literals
 
+import time
+import calendar
+
 import six
 import base64
 import binascii
@@ -23,7 +26,8 @@ GRANT_TYPE_MAPPING = {
     'password': (AbstractApplication.GRANT_PASSWORD,),
     'client_credentials': (AbstractApplication.GRANT_CLIENT_CREDENTIALS,),
     'refresh_token': (AbstractApplication.GRANT_AUTHORIZATION_CODE, AbstractApplication.GRANT_PASSWORD,
-                      AbstractApplication.GRANT_CLIENT_CREDENTIALS)
+                      AbstractApplication.GRANT_CLIENT_CREDENTIALS),
+    'openid': (AbstractApplication.GRANT_AUTHORIZATION_CODE)
 }
 
 
@@ -283,6 +287,71 @@ class OAuth2Validator(RequestValidator):
 
     def validate_redirect_uri(self, client_id, redirect_uri, request, *args, **kwargs):
         return request.client.redirect_uri_allowed(redirect_uri)
+
+    def get_id_token(self, token, token_handler, request):
+        """
+
+        {
+            # Issuer Identifier for the Issuer of the response
+            "iss": "https://server.example.com",
+
+            # Subject Identifier. A locally unique and never reassigned identifier within the Issuer for the End-User, which is intended to be consumed by the Client, e.g., 24400320 or AItOawmwtWwcT0k51BayewNvutrJUqsvl6qs7A4. It MUST NOT exceed 255 ASCII characters in length. The sub value is a case sensitive string.
+            "sub": "24400320",
+
+            # Audience(s) that this ID Token is intended for. It MUST contain the OAuth 2.0 client_id of the Relying Party as an audience value. It MAY also contain identifiers for other audiences. In the general case, the aud value is an array of case sensitive strings. In the common special case when there is one audience, the aud value MAY be a single case sensitive string.
+            "aud": "s6BhdRkqt3",
+
+            # Expiration time on or after which the ID Token MUST NOT be accepted for processing. The processing of this parameter requires that the current date/time MUST be before the expiration date/time listed in the value. Implementers MAY provide for some small leeway, usually no more than a few minutes, to account for clock skew. Its value is a JSON number representing the number of seconds from 1970-01-01T0:0:0Z as measured in UTC until the date/time. See RFC 3339 [RFC3339] for details regarding date/times in general and UTC in particular.
+            "exp": 1311281970,
+
+            # Time at which the JWT was issued. Its value is a JSON number representing the number of seconds from 1970-01-01T0:0:0Z as measured in UTC until the date/time.
+            "iat": 1311280970,
+
+            # Time when the End-User authentication occurred. Its value is a JSON number representing the number of seconds from 1970-01-01T0:0:0Z as measured in UTC until the date/time. When a max_age request is made or when auth_time is requested as an Essential Claim, then this Claim is REQUIRED; otherwise, its inclusion is OPTIONAL. (The auth_time Claim semantically corresponds to the OpenID 2.0 PAPE [OpenID.PAPE] auth_time response parameter.)
+            "auth_time": 1311280969
+        }
+
+
+        :param token:
+        :type token: oauth2.rfc6749.tokens.OAuth2Token
+        :param token_handler:
+        :type token_handler:
+        :param request:
+        :type request:
+        :return:
+        :rtype:
+        """
+
+        # Should make this use python-jose
+        import jwt
+
+        gmnow = time.gmtime()
+        epoch_now = calendar.timegm(gmnow)
+        exp = epoch_now + oauth2_settings.OPENID_CONNECT_ID_TOKEN_LIFETIME
+
+        try:
+            user_auth_time = int(time.mktime(request.user.last_login.timetuple()))
+        except:
+            log.error("Unable to find last login time for {}".format(request.user))
+            user_auth_time = epoch_now
+
+        # TODO: JWS signing and encrypting http://openid.net/specs/openid-connect-core-1_0.html#SigEnc
+        id_token = {
+            "iss": oauth2_settings.OPENID_CONNECT_TOKEN_ISSUER, # TODO: needs real solution
+            "sub": getattr(request.user, 'pk', None),
+            "aud": request.client.client_id,
+            "exp": exp,
+            "iat": epoch_now,
+            "auth_time": user_auth_time
+        }
+
+        self.extend_id_token_with_claims (token, token_handler, request)
+
+        return jwt.encode(id_token, request.client.client_secret, algorithm='HS512')
+
+    def extend_id_token_with_claims(self, token, token_handler, request):
+        # To do this in your app, subclass OAuth2Validator
+        pass
 
     def save_authorization_code(self, client_id, code, request, *args, **kwargs):
         expires = timezone.now() + timedelta(

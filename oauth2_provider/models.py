@@ -147,6 +147,8 @@ class Grant(models.Model):
                       :data:`settings.AUTHORIZATION_CODE_EXPIRE_SECONDS`
     * :attr:`redirect_uri` Self explained
     * :attr:`scope` Required scopes, optional
+    * :attr:`max_age` openid connect max_age param, optional
+    * :attr:`acr` openid connect acr used, optional
     """
     user = models.ForeignKey(settings.AUTH_USER_MODEL)
     code = models.CharField(max_length=255, db_index=True)  # code comes from oauthlib
@@ -154,6 +156,8 @@ class Grant(models.Model):
     expires = models.DateTimeField()
     redirect_uri = models.CharField(max_length=255)
     scope = models.TextField(blank=True)
+    max_age = models.SmallIntegerField(null=True)
+    acr = models.CharField(max_length=255, null=True)
 
     def is_expired(self):
         """

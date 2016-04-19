@@ -1,13 +1,17 @@
 from __future__ import unicode_literals
 
 import json
+import logging
 
 from oauthlib import oauth2
 from oauthlib.common import urlencode, urlencoded, quote
 
+from oauth2_provider.models import Grant
 from .exceptions import OAuthToolkitError, FatalClientError
 from .settings import oauth2_settings
 from .compat import urlparse, urlunparse
+
+log = logging.getLogger('oauth2_provider')
 
 
 class OAuthLibCore(object):
@@ -134,8 +138,15 @@ class OAuthLibCore(object):
         uri, http_method, body, headers = self._extract_params(request)
         extra_credentials = self._get_extra_credentials(request)
 
+        code = request.POST.get('code')
+        auth_code_grant = Grant.objects.filter(code=code).first()
+        grant_type_for_scope = None
+        if "openid" in auth_code_grant.scope:
+            grant_type_for_scope = "openid"
+
         headers, body, status = self.server.create_token_response(uri, http_method, body,
-                                                                  headers, extra_credentials)
+                                                                  headers, extra_credentials,
+                                                                  grant_type_for_scope)
         uri = headers.get("Location", None)
 
         return uri, headers, body, status
