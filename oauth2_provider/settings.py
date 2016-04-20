@@ -49,7 +49,8 @@ DEFAULTS = {
 
     # TODO: this can't have a reasonable default - can it be made better?
     'OPENID_CONNECT_TOKEN_ISSUER': '??????',
-    'OPENID_CONNECT_ID_TOKEN_LIFETIME' : 300,
+    'OPENID_CONNECT_ID_TOKEN_LIFETIME': 300,
+    'OPENID_CONNECT_ID_TOKEN_ALG': 'HS512',
 
     # Special settings that will be evaluated at runtime
     '_SCOPES': [],

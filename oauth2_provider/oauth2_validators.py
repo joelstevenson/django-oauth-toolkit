@@ -321,9 +321,7 @@ class OAuth2Validator(RequestValidator):
         :return:
         :rtype:
         """
-
-        # Should make this use python-jose
-        import jwt
+        from jose import jws
 
         gmnow = time.gmtime()
         epoch_now = calendar.timegm(gmnow)
@@ -335,7 +333,6 @@ class OAuth2Validator(RequestValidator):
             log.error("Unable to find last login time for {}".format(request.user))
             user_auth_time = epoch_now
 
-        # TODO: JWS signing and encrypting http://openid.net/specs/openid-connect-core-1_0.html#SigEnc
         id_token = {
             "iss": oauth2_settings.OPENID_CONNECT_TOKEN_ISSUER, # TODO: needs real solution
             "sub": getattr(request.user, 'pk', None),
@@ -345,9 +342,11 @@ class OAuth2Validator(RequestValidator):
             "auth_time": user_auth_time
         }
 
+        token['id_token'] = id_token
+
         self.extend_id_token_with_claims (token, token_handler, request)
 
-        return jwt.encode(id_token, request.client.client_secret, algorithm='HS512')
+        return jws.sign(id_token, request.client.client_secret, algorithm=oauth2_settings.OPENID_CONNECT_ID_TOKEN_ALG)
 
     def extend_id_token_with_claims(self, token, token_handler, request):
         # To do this in your app, subclass OAuth2Validator
