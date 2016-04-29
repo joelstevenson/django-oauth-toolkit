@@ -6,6 +6,8 @@ import calendar
 import six
 import base64
 import binascii
+import hashlib
+import re
 import logging
 from datetime import timedelta
 
@@ -15,6 +17,7 @@ from django.contrib.auth import authenticate
 from django.core.exceptions import ObjectDoesNotExist
 from oauthlib.oauth2 import RequestValidator
 
+from .utils import build_claims_doc
 from .compat import unquote_plus
 from .models import Grant, AccessToken, RefreshToken, get_application_model, AbstractApplication
 from .settings import oauth2_settings
@@ -27,7 +30,7 @@ GRANT_TYPE_MAPPING = {
     'client_credentials': (AbstractApplication.GRANT_CLIENT_CREDENTIALS,),
     'refresh_token': (AbstractApplication.GRANT_AUTHORIZATION_CODE, AbstractApplication.GRANT_PASSWORD,
                       AbstractApplication.GRANT_CLIENT_CREDENTIALS),
-    'openid': (AbstractApplication.GRANT_AUTHORIZATION_CODE)
+    'openid': (AbstractApplication.GRANT_OPENID_CONNECT)
 }
 
 
@@ -137,6 +140,11 @@ class OAuth2Validator(RequestValidator):
             log.debug("Failed body authentication: Application %s does not exist" % client_id)
             return None
 
+    def _get_user_claims_provider(self):
+        if not hasattr(self, '_user_claims_provider'):
+            self._user_claims_provider = oauth2_settings.OPENID_USER_CLAIMS_PROVIDER_CLASS()
+        return self._user_claims_provider
+
     def client_authentication_required(self, request, *args, **kwargs):
         """
         Determine if the client has to be authenticated
@@ -236,7 +244,7 @@ class OAuth2Validator(RequestValidator):
             if access_token.is_valid(scopes):
                 request.client = access_token.application
                 request.user = access_token.user
-                request.scopes = scopes
+                request.scopes = scopes if scopes else access_token.scope
 
                 # this is needed by django rest framework
                 request.access_token = access_token
@@ -270,9 +278,13 @@ class OAuth2Validator(RequestValidator):
         rfc:`8.4`, so validate the response_type only if it matches 'code' or 'token'
         """
         if response_type == 'code':
-            return client.authorization_grant_type == AbstractApplication.GRANT_AUTHORIZATION_CODE
+            return client.authorization_grant_type == AbstractApplication.GRANT_AUTHORIZATION_CODE \
+                    or client.authorization_grant_type == AbstractApplication.GRANT_OPENID_CONNECT
         elif response_type == 'token':
             return client.authorization_grant_type == AbstractApplication.GRANT_IMPLICIT
+        elif response_type in ['code token', 'code id_token', 'code token id_token']:
+            # TODO: should these be accepting of alternate orders e.g. 'code id_token token' ?
+            return client.authorization_grant_type == AbstractApplication.GRANT_OPENID_CONNECT
         else:
             return False
 
@@ -309,6 +321,12 @@ class OAuth2Validator(RequestValidator):
 
             # Time when the End-User authentication occurred. Its value is a JSON number representing the number of seconds from 1970-01-01T0:0:0Z as measured in UTC until the date/time. When a max_age request is made or when auth_time is requested as an Essential Claim, then this Claim is REQUIRED; otherwise, its inclusion is OPTIONAL. (The auth_time Claim semantically corresponds to the OpenID 2.0 PAPE [OpenID.PAPE] auth_time response parameter.)
             "auth_time": 1311280969
+
+            # The Access Token hash value
+            "at_hash": ABCDEF123
+
+            # The Authorization Code hash value
+            "c_hash": FEDCBA321
         }
 
 
@@ -321,11 +339,12 @@ class OAuth2Validator(RequestValidator):
         :return:
         :rtype:
         """
-        from jose import jws
 
         gmnow = time.gmtime()
         epoch_now = calendar.timegm(gmnow)
         exp = epoch_now + oauth2_settings.OPENID_CONNECT_ID_TOKEN_LIFETIME
+
+        user_claims_provider = self._get_user_claims_provider()
 
         try:
             user_auth_time = int(time.mktime(request.user.last_login.timetuple()))
@@ -342,15 +361,109 @@ class OAuth2Validator(RequestValidator):
             "auth_time": user_auth_time
         }
 
-        token['id_token'] = id_token
+        algorithm_name = oauth2_settings.OPENID_CONNECT_ID_TOKEN_ALG
 
-        self.extend_id_token_with_claims (token, token_handler, request)
+        hashlib_info = None
+        if algorithm_name != 'none':
+            hashlib_info = {
+                "alg": algorithm_name,
+                "num_bits_in_alg": self._get_num_bits_from_algorithm(algorithm_name)
+            }
+            hashlib_info['digester'] = hashlib.new("sha%s" % hashlib_info.get('num_bits_in_alg'))
 
-        return jws.sign(id_token, request.client.client_secret, algorithm=oauth2_settings.OPENID_CONNECT_ID_TOKEN_ALG)
+        if token.get('access_token'):
+            self.add_element_hash_to_id_token(id_token, 'at_hash', token.get('access_token'), hashlib_info=hashlib_info)
 
-    def extend_id_token_with_claims(self, token, token_handler, request):
-        # To do this in your app, subclass OAuth2Validator
-        pass
+        if request.code:
+            self.add_element_hash_to_id_token(id_token, 'c_hash', request.code, hashlib_info=hashlib_info)
+
+        if user_claims_provider:
+
+            claims_doc = build_claims_doc(request.scopes, request, "id_token")
+
+            claims = user_claims_provider.get_claims(request.user, request.client, claims_doc, request)
+            if claims:
+                id_token.update(claims)
+
+        return self.create_jws(id_token, request.client.client_secret, algorithm_name)
+
+    def create_jws(self, id_token, client_secret, algorithm):
+        from jose import jws
+        return jws.sign(id_token, client_secret, algorithm=algorithm)
+
+    def add_element_hash_to_id_token(self, id_token, element_name, value_to_hash, hashlib_info=None, algorithm=None):
+
+        # at_hash
+        # Access Token hash value. Its value is the base64url encoding of the left-most half of the
+        # hash of the octets of the ASCII representation of the access_token value, where the hash
+        # algorithm used is the hash algorithm used in the alg Header Parameter of the ID Token's
+        # JOSE Header. For instance, if the alg is RS256, hash the access_token value with SHA-256, then
+        # take the left-most 128 bits and base64url encode them. The at_hash value is a case sensitive string.
+        # If the ID Token is issued from the Authorization Endpoint with an access_token value, which is the
+        # case for the response_type value code id_token token, this is REQUIRED; otherwise, its inclusion is OPTIONAL.
+        #
+        # c_hash
+        # Code hash value. Its value is the base64url encoding of the left-most half of the hash of the octets of
+        # the ASCII representation of the code value, where the hash algorithm used is the hash algorithm used in
+        # the alg Header Parameter of the ID Token's JOSE Header. For instance, if the alg is HS512, hash the code
+        # value with SHA-512, then take the left-most 256 bits and base64url encode them. The c_hash value is a case
+        # sensitive string.
+        # If the ID Token is issued from the Authorization Endpoint with a code, which is the case for the
+        # response_type values code id_token and code id_token token, this is REQUIRED; otherwise, its inclusion
+        # is OPTIONAL.
+
+        # The table below is the set of "alg" (algorithm) Header Parameter
+        # values defined by this specification for use with JWS, each of which
+        # is explained in more detail in the following sections:
+        #
+        # +--------------+-------------------------------+--------------------+
+        # | "alg" Param  | Digital Signature or MAC      | Implementation     |
+        # | Value        | Algorithm                     | Requirements       |
+        # +--------------+-------------------------------+--------------------+
+        # | HS256        | HMAC using SHA-256            | Required           |
+        # | HS384        | HMAC using SHA-384            | Optional           |
+        # | HS512        | HMAC using SHA-512            | Optional           |
+        # | RS256        | RSASSA-PKCS1-v1_5 using       | Recommended        |
+        # |              | SHA-256                       |                    |
+        # | RS384        | RSASSA-PKCS1-v1_5 using       | Optional           |
+        # |              | SHA-384                       |                    |
+        # | RS512        | RSASSA-PKCS1-v1_5 using       | Optional           |
+        # |              | SHA-512                       |                    |
+        # | ES256        | ECDSA using P-256 and SHA-256 | Recommended+       |
+        # | ES384        | ECDSA using P-384 and SHA-384 | Optional           |
+        # | ES512        | ECDSA using P-521 and SHA-512 | Optional           |
+        # | PS256        | RSASSA-PSS using SHA-256 and  | Optional           |
+        # |              | MGF1 with SHA-256             |                    |
+        # | PS384        | RSASSA-PSS using SHA-384 and  | Optional           |
+        # |              | MGF1 with SHA-384             |                    |
+        # | PS512        | RSASSA-PSS using SHA-512 and  | Optional           |
+        # |              | MGF1 with SHA-512             |                    |
+        # | none         | No digital signature or MAC   | Optional           |
+        # |              | performed                     |                    |
+        # +--------------+-------------------------------+--------------------+
+        #
+        # The use of "+" in the Implementation Requirements column indicates
+        # that the requirement strength is likely to be increased in a future
+        # version of the specification.
+
+        if hashlib_info:
+            num_bits_to_hash = hashlib_info.get('num_bits_in_alg') / 16
+            hashlib = hashlib_info.get('digester')
+            hashlib.update(value_to_hash)
+
+            id_token[element_name] = base64.b64encode(hashlib.digest()[:num_bits_to_hash])
+
+    def _get_num_bits_from_algorithm(self, algorithm_name):
+        num_bits_in_alg = None
+        if algorithm_name != "none":
+            pattern = re.compile(r'[HREP]S(\d+)')
+            match = pattern.match(algorithm_name)
+            if match:
+                num_bits_in_alg = int(match.group(1))
+            else:
+                log.debug("Unrecognized JWS signing algorithm %s" % algorithm_name)
+        return num_bits_in_alg
+
 
     def save_authorization_code(self, client_id, code, request, *args, **kwargs):
         expires = timezone.now() + timedelta(
