@@ -5,11 +5,11 @@ import json
 
 from ..utils import build_claims_doc
 from ..settings import oauth2_settings
-from ..views.mixins import ProtectedResourceMixin
+from ..views.mixins import ProtectedResourceMixin, ScopedResourceMixin
 from ..exceptions import UnsupportedResponseTypeError
 
 
-class UserInfoView(CsrfExemptMixin, ProtectedResourceMixin, View):
+class UserInfoView(CsrfExemptMixin, ScopedResourceMixin, ProtectedResourceMixin, View):
     """
     Implements an endpoint to provide UserInfo
 
