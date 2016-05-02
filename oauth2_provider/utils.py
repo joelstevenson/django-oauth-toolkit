@@ -7,7 +7,10 @@ def build_claims_doc(scopes, request, claims_location="userinfo"):
         This document is an extension of the json document format that can be submitted via the claims parameter
         it includes a list of the scopes as well.  It looks like:
         {
-            "scopes": ["scope1", "scope2", etc...],           # may be an empty list
+            "scopes": {                                       # may be an empty obj
+                "scope1": null,
+                "scope2": null
+             },
             "userinfo": {                                     # doc will have either a userinfo key
                  "given_name": {"essential": true},
                  "nickname": null,
@@ -32,7 +35,7 @@ def build_claims_doc(scopes, request, claims_location="userinfo"):
     :rtype:
     """
     claims_doc = {
-        "scopes": list(scopes)
+        "scopes": dict((scope,None) for scope in scopes)
     }
 
     if request and request.claims and request.claims.get(claims_location):
