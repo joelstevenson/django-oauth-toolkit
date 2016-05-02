@@ -244,7 +244,6 @@ class OAuth2Validator(RequestValidator):
             if access_token.is_valid(scopes):
                 request.client = access_token.application
                 request.user = access_token.user
-                request.scopes = scopes if scopes else access_token.scope
 
                 # this is needed by django rest framework
                 request.access_token = access_token
