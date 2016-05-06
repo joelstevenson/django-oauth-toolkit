@@ -108,7 +108,7 @@ class OAuthLibCore(object):
         :param request: The current django.http.HttpRequest object
         :param scopes: A list of provided scopes
         :param credentials: Authorization credentials dictionary containing
-                           `client_id`, `state`, `redirect_uri`, `response_type`
+                           `client_id`, `state`, `redirect_uri`, `response_type`, `claims`
         :param allow: True if the user authorize the client, otherwise False
         """
         try:
@@ -141,12 +141,15 @@ class OAuthLibCore(object):
         code = request.POST.get('code')
         auth_code_grant = Grant.objects.filter(code=code).first()
         grant_type_for_scope = None
+        claims = None
         if "openid" in auth_code_grant.scope:
             grant_type_for_scope = "openid"
+            if auth_code_grant.claims:
+                claims = json.loads(auth_code_grant.claims)
 
         headers, body, status = self.server.create_token_response(uri, http_method, body,
                                                                   headers, extra_credentials,
-                                                                  grant_type_for_scope)
+                                                                  grant_type_for_scope, claims)
         uri = headers.get("Location", None)
 
         return uri, headers, body, status

@@ -32,8 +32,8 @@ class UserInfoView(CsrfExemptMixin, ScopedResourceMixin, ProtectedResourceMixin,
         user_info_data = {"sub": user.pk}
         claims_provider = self._get_user_claims_provider()
 
-        if claims_provider:
-            claims_doc = build_claims_doc(scopes, oauthlib_request, claims_location="userinfo")
+        if claims_provider and oauthlib_request.access_token.claims:
+            claims_doc = build_claims_doc(scopes, oauthlib_request.access_token.claims, claims_location="userinfo")
 
             claims = claims_provider.get_claims(user, client, claims_doc, oauthlib_request)
             if claims:

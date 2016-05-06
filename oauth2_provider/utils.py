@@ -1,5 +1,8 @@
+import logging
 
-def build_claims_doc(scopes, request, claims_location="userinfo"):
+log = logging.getLogger(__name__)
+
+def build_claims_doc(scopes, requested_claims, claims_location="userinfo"):
     """
         Build a claims document for the django app's user claims provider to use when populating either the id_token
         or the userinfo request.
@@ -27,8 +30,8 @@ def build_claims_doc(scopes, request, claims_location="userinfo"):
 
     :param scopes:
     :type scopes:
-    :param request:
-    :type request:
+    :param requested_claims:
+    :type requested_claims:
     :param claims_location:
     :type claims_location:
     :return:
@@ -38,8 +41,8 @@ def build_claims_doc(scopes, request, claims_location="userinfo"):
         "scopes": dict((scope,None) for scope in scopes)
     }
 
-    if request and request.claims and request.claims.get(claims_location):
-        claims_doc.update(request.claims.get(claims_location))
+    if requested_claims and requested_claims.get(claims_location):
+        claims_doc.update(requested_claims.get(claims_location))
 
     return claims_doc
 

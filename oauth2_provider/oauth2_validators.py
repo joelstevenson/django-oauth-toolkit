@@ -9,6 +9,7 @@ import binascii
 import hashlib
 import re
 import logging
+import json
 from datetime import timedelta
 
 from django.utils import timezone
@@ -247,6 +248,8 @@ class OAuth2Validator(RequestValidator):
 
                 # this is needed by django rest framework
                 request.access_token = access_token
+                if request.access_token.claims:
+                    request.access_token.claims = json.loads(request.access_token.claims)
                 return True
             return False
         except AccessToken.DoesNotExist:
@@ -258,6 +261,8 @@ class OAuth2Validator(RequestValidator):
             if not grant.is_expired():
                 request.scopes = grant.scope.split(' ')
                 request.user = grant.user
+                if grant.claims:
+                    request.claims = json.loads(grant.claims)
                 return True
             return False
 
@@ -376,9 +381,9 @@ class OAuth2Validator(RequestValidator):
         if request.code:
             self.add_element_hash_to_id_token(id_token, 'c_hash', request.code, hashlib_info=hashlib_info)
 
-        if user_claims_provider:
+        if user_claims_provider and request.claims:
 
-            claims_doc = build_claims_doc(request.scopes, request, "id_token")
+            claims_doc = build_claims_doc(request.scopes, request.claims, "id_token")
 
             claims = user_claims_provider.get_claims(request.user, request.client, claims_doc, request)
             if claims:
@@ -467,9 +472,12 @@ class OAuth2Validator(RequestValidator):
     def save_authorization_code(self, client_id, code, request, *args, **kwargs):
         expires = timezone.now() + timedelta(
             seconds=oauth2_settings.AUTHORIZATION_CODE_EXPIRE_SECONDS)
+        claims = ''
+        if request.claims:
+            claims = json.dumps(request.claims)
         g = Grant(application=request.client, user=request.user, code=code['code'],
                   expires=expires, redirect_uri=request.redirect_uri,
-                  scope=' '.join(request.scopes))
+                  scope=' '.join(request.scopes), claims=claims)
         g.save()
 
     def save_bearer_token(self, token, request, *args, **kwargs):
@@ -488,12 +496,17 @@ class OAuth2Validator(RequestValidator):
         if request.grant_type == 'client_credentials':
             request.user = None
 
+        claims = ''
+        if request.claims:
+            claims = json.dumps(request.claims)
+
         access_token = AccessToken(
             user=request.user,
             scope=token['scope'],
             expires=expires,
             token=token['access_token'],
-            application=request.client)
+            application=request.client,
+            claims=claims)
         access_token.save()
 
         if 'refresh_token' in token:
